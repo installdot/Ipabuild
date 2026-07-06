@@ -10,5 +10,7 @@
 	<true/>
 	<key>get-task-allow</key>
 	<true/>
+    <key>com.apple.private.security.no-container</key>
+    <true/>
 </dict>
 </plist>
