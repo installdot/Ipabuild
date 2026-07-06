@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
-	<string>TrollApp</string>
+	<string>FFInternal</string>
 	<key>CFBundleDisplayName</key>
-	<string>TrollApp</string>
+	<string>FFInternal</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.yourname.trollapp</string>
 	<key>CFBundleVersion</key>
@@ -15,7 +15,7 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleExecutable</key>
-	<string>TrollApp</string>
+	<string>FFInternal</string>
 	<key>MinimumOSVersion</key>
 	<string>14.0</string>
 	<key>CFBundleSupportedPlatforms</key>
