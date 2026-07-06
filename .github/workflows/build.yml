@@ -1,0 +1,75 @@
+name: Build IPA (Swift + iPhoneOS16.5 SDK)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  APP_NAME: TrollApp
+  BUNDLE_ID: com.yourname.trollapp
+  SDK_DIR: iPhoneOS16.5.sdk          # folder must sit at repo root
+  DEPLOYMENT_TARGET: "14.0"
+
+jobs:
+  build:
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Verify SDK folder exists
+        run: |
+          if [ ! -d "$SDK_DIR" ]; then
+            echo "::error::SDK folder '$SDK_DIR' not found at repo root. Add it before building."
+            exit 1
+          fi
+          echo "Using SDK at: $(pwd)/$SDK_DIR"
+
+      - name: Install ldid
+        run: brew install ldid || brew install --HEAD ldid
+
+      - name: Compile Swift sources
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          xcrun swiftc \
+            Sources/*.swift \
+            -sdk "$SDK_DIR" \
+            -target arm64-apple-ios${DEPLOYMENT_TARGET} \
+            -swift-version 5 \
+            -emit-executable \
+            -o "build/${APP_NAME}"
+
+      - name: Assemble .app bundle
+        run: |
+          set -euo pipefail
+          APP_DIR="build/${APP_NAME}.app"
+          mkdir -p "$APP_DIR"
+          cp "build/${APP_NAME}" "$APP_DIR/${APP_NAME}"
+          cp Info.plist "$APP_DIR/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable ${APP_NAME}" "$APP_DIR/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${BUNDLE_ID}" "$APP_DIR/Info.plist"
+
+      - name: Sign with entitlements (ldid)
+        run: |
+          set -euo pipefail
+          ldid -Sentitlements.plist "build/${APP_NAME}.app/${APP_NAME}"
+
+      - name: Package IPA
+        run: |
+          set -euo pipefail
+          cd build
+          mkdir -p Payload
+          cp -R "${APP_NAME}.app" Payload/
+          zip -r "${APP_NAME}.ipa" Payload
+          mkdir -p ../out
+          mv "${APP_NAME}.ipa" ../out/
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-ipa
+          path: out/*.ipa
+          if-no-files-found: error
