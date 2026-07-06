@@ -19,10 +19,51 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Verify SDK folder exists
+      - name: Download SDK archive
+        env:
+          SDK_URL: ${{ secrets.SDK_URL }}
         run: |
+          set -euo pipefail
+          if [ -d "$SDK_DIR" ]; then
+            echo "SDK folder already present in repo, skipping download."
+            exit 0
+          fi
+          if [ -f "iPhoneOS16.5.sdk.tar.xz" ]; then
+            echo "Found local archive in repo, will extract that."
+            exit 0
+          fi
+          if [ -z "${SDK_URL:-}" ]; then
+            echo "::error::No $SDK_DIR folder or iPhoneOS16.5.sdk.tar.xz in repo, and no SDK_URL secret set."
+            exit 1
+          fi
+          echo "Downloading SDK archive from SDK_URL secret..."
+          curl -L --fail -o iPhoneOS16.5.sdk.tar.xz "$SDK_URL"
+
+      - name: Extract SDK archive
+        run: |
+          set -euo pipefail
+          if [ -d "$SDK_DIR" ]; then
+            echo "Using SDK at: $(pwd)/$SDK_DIR"
+            exit 0
+          fi
+          if [ ! -f "iPhoneOS16.5.sdk.tar.xz" ]; then
+            echo "::error::iPhoneOS16.5.sdk.tar.xz not found after download step."
+            exit 1
+          fi
+          echo "Extracting iPhoneOS16.5.sdk.tar.xz ..."
+          tar -xJf iPhoneOS16.5.sdk.tar.xz
+
+          # Archive may already contain the SDK_DIR folder at its root,
+          # or extract flat/nested — normalize either case.
           if [ ! -d "$SDK_DIR" ]; then
-            echo "::error::SDK folder '$SDK_DIR' not found at repo root. Add it before building."
+            FOUND_DIR=$(find . -maxdepth 3 -type d -name "iPhoneOS16.5.sdk" | head -n 1)
+            if [ -n "$FOUND_DIR" ] && [ "$FOUND_DIR" != "./$SDK_DIR" ]; then
+              mv "$FOUND_DIR" "$SDK_DIR"
+            fi
+          fi
+
+          if [ ! -d "$SDK_DIR" ]; then
+            echo "::error::Extraction succeeded but '$SDK_DIR' folder not found. Check archive layout."
             exit 1
           fi
           echo "Using SDK at: $(pwd)/$SDK_DIR"
