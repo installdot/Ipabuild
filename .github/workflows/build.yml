@@ -80,6 +80,7 @@ jobs:
             -sdk "$SDK_DIR" \
             -target arm64-apple-ios${DEPLOYMENT_TARGET} \
             -swift-version 5 \
+            -parse-as-library \
             -emit-executable \
             -o "build/${APP_NAME}"
 
