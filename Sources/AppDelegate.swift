@@ -1,16 +1,61 @@
 import UIKit
 import UniformTypeIdentifiers
 
+// MARK: - Asset slots
+
+/// Each slot represents one independently-managed target file: its own path setting,
+/// its own saved backup, and its own "imported" staging file.
+enum AssetSlot: CaseIterable {
+    case primary
+    case avatarIndexer
+
+    var displayName: String {
+        switch self {
+        case .primary: return "Main Cache File"
+        case .avatarIndexer: return "Avatar Indexer"
+        }
+    }
+
+    var defaultPath: String {
+        switch self {
+        case .primary:
+            return "/var/mobile/Containers/Data/Application/CD69FE41-53FF-4EE8-A0BC-22181F943960/Documents/contentcache/Compulsory/ios/gameassetbundles/cache_res.CfnFf59sr1SbsqQ6JqTKsEusjKs~3D"
+        case .avatarIndexer:
+            return "/var/mobile/Containers/Data/Application/CD69FE41-53FF-4EE8-A0BC-22181F943960/Documents/contentcache/Compulsory/ios/gameassetbundles/avatar/assetindexer.H5ak1JM1Eck~2FxRcJrEp~2FMzeuqmY~3D"
+        }
+    }
+
+    fileprivate var pathDefaultsKey: String {
+        switch self {
+        case .primary: return "targetFilePath"
+        case .avatarIndexer: return "targetFilePath_avatarIndexer"
+        }
+    }
+
+    fileprivate var backupFileName: String {
+        switch self {
+        case .primary: return "backup_file"
+        case .avatarIndexer: return "backup_file_avatar_indexer"
+        }
+    }
+
+    fileprivate var newFileName: String {
+        switch self {
+        case .primary: return "new_file"
+        case .avatarIndexer: return "new_file_avatar_indexer"
+        }
+    }
+}
+
 // MARK: - Persistent settings
 
 enum Settings {
-    static let targetPathKey = "targetFilePath"
-    static let defaultTargetPath =
-        "/var/mobile/Containers/Data/Application/CD69FE41-53FF-4EE8-A0BC-22181F943960/Documents/contentcache/Compulsory/ios/gameassetbundles/cache_res.CfnFf59sr1SbsqQ6JqTKsEusjKs~3D"
+    static func targetPath(for slot: AssetSlot) -> String {
+        UserDefaults.standard.string(forKey: slot.pathDefaultsKey) ?? slot.defaultPath
+    }
 
-    static var targetPath: String {
-        get { UserDefaults.standard.string(forKey: targetPathKey) ?? defaultTargetPath }
-        set { UserDefaults.standard.set(newValue, forKey: targetPathKey) }
+    static func setTargetPath(_ path: String, for slot: AssetSlot) {
+        UserDefaults.standard.set(path, forKey: slot.pathDefaultsKey)
     }
 }
 
@@ -20,11 +65,22 @@ enum LocalStore {
     static var documentsDir: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     }
-    static var backupFile: URL { documentsDir.appendingPathComponent("backup_file") }
-    static var newFile: URL { documentsDir.appendingPathComponent("new_file") }
 
-    static var hasBackup: Bool { FileManager.default.fileExists(atPath: backupFile.path) }
-    static var hasNewFile: Bool { FileManager.default.fileExists(atPath: newFile.path) }
+    static func backupFile(for slot: AssetSlot) -> URL {
+        documentsDir.appendingPathComponent(slot.backupFileName)
+    }
+
+    static func newFile(for slot: AssetSlot) -> URL {
+        documentsDir.appendingPathComponent(slot.newFileName)
+    }
+
+    static func hasBackup(for slot: AssetSlot) -> Bool {
+        FileManager.default.fileExists(atPath: backupFile(for: slot).path)
+    }
+
+    static func hasNewFile(for slot: AssetSlot) -> Bool {
+        FileManager.default.fileExists(atPath: newFile(for: slot).path)
+    }
 }
 
 // MARK: - File operations
@@ -59,6 +115,22 @@ enum FileOps {
         } catch {
             throw OpError.copyFailed(error.localizedDescription)
         }
+    }
+}
+
+// MARK: - Closure-based control actions (so we can capture a slot per-button without objc selector fan-out)
+
+extension UIControl {
+    private final class ClosureSleeve {
+        let closure: () -> Void
+        init(_ closure: @escaping () -> Void) { self.closure = closure }
+        @objc func invoke() { closure() }
+    }
+
+    func addAction(for event: UIControl.Event = .touchUpInside, _ closure: @escaping () -> Void) {
+        let sleeve = ClosureSleeve(closure)
+        addTarget(sleeve, action: #selector(ClosureSleeve.invoke), for: event)
+        objc_setAssociatedObject(self, UUID().uuidString.withCString { UnsafeRawPointer($0) }, sleeve, .OBJC_ASSOCIATION_RETAIN)
     }
 }
 
@@ -164,84 +236,53 @@ final class CardButton: UIControl {
     }
 }
 
-// MARK: - Root View Controller
+// MARK: - One self-contained section (path card + action buttons) for a single AssetSlot
 
-final class RootViewController: UIViewController {
+final class SlotSectionView: UIStackView {
+    let slot: AssetSlot
 
-    private let scrollView = UIScrollView()
-    private let contentStack = UIStackView()
-
-    private let welcomeTitle = UILabel()
-    private let welcomeSubtitle = UILabel()
-
-    private let pathCard = UIView()
     private let pathLabel = UILabel()
-    private let changePathButton = CardButton(icon: "folder.badge.gearshape",
-                                               tint: .systemIndigo,
-                                               title: "Change Target Path",
-                                               subtitle: "Choose which file gets replaced")
+    private let restoreButton: CardButton
+    private let applyButton: CardButton
 
-    private let restoreOriginalButton = CardButton(icon: "arrow.uturn.backward.circle.fill",
-                                                    tint: .systemGreen,
-                                                    title: "Restore Saved Backup",
-                                                    subtitle: "Put your saved backup back in place")
+    weak var presenter: UIViewController?
 
-    private let applyNewFileButton = CardButton(icon: "shippingbox.fill",
-                                                 tint: .systemOrange,
-                                                 title: "Apply Imported File",
-                                                 subtitle: "Swap in the file you imported")
+    init(slot: AssetSlot) {
+        self.slot = slot
 
-    private let manageBackupsButton = CardButton(icon: "externaldrive.fill.badge.plus",
-                                                  tint: .systemBlue,
-                                                  title: "Manage Files",
-                                                  subtitle: "Save a backup or import a new file")
+        let changePathButton = CardButton(icon: "folder.badge.gearshape",
+                                           tint: .systemIndigo,
+                                           title: "Change Target Path",
+                                           subtitle: "Choose which file gets replaced")
 
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        title = "Asset Swapper"
-        view.backgroundColor = .systemGroupedBackground
-        setupUI()
-        refreshPathLabel()
-        refreshSubtitles()
+        restoreButton = CardButton(icon: "arrow.uturn.backward.circle.fill",
+                                    tint: .systemGreen,
+                                    title: "Restore Saved Backup",
+                                    subtitle: "Put your saved backup back in place")
 
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(sharedFileReceived),
-            name: .receivedSharedFile, object: nil
-        )
-    }
+        applyButton = CardButton(icon: "shippingbox.fill",
+                                  tint: .systemOrange,
+                                  title: "Apply Imported File",
+                                  subtitle: "Swap in the file you imported")
 
-    override func viewWillAppear(_ animated: Bool) {
-        super.viewWillAppear(animated)
-        refreshPathLabel()
-        refreshSubtitles()
-    }
+        let manageBackupsButton = CardButton(icon: "externaldrive.fill.badge.plus",
+                                              tint: .systemBlue,
+                                              title: "Manage Files",
+                                              subtitle: "Save a backup or import a new file")
 
-    private func setupUI() {
-        // Scroll container
-        scrollView.translatesAutoresizingMaskIntoConstraints = false
-        scrollView.alwaysBounceVertical = true
-        view.addSubview(scrollView)
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        axis = .vertical
+        spacing = 10
 
-        contentStack.axis = .vertical
-        contentStack.spacing = 24
-        contentStack.translatesAutoresizingMaskIntoConstraints = false
-        scrollView.addSubview(contentStack)
+        // Section header
+        let sectionLabel = UILabel()
+        sectionLabel.text = slot.displayName.uppercased()
+        sectionLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        sectionLabel.textColor = .secondaryLabel
 
-        // Welcome header
-        welcomeTitle.text = "Welcome back 👋"
-        welcomeTitle.font = .systemFont(ofSize: 28, weight: .bold)
-        welcomeTitle.textColor = .label
-
-        welcomeSubtitle.text = "Manage and swap your cached game asset file in just a couple of taps."
-        welcomeSubtitle.font = .systemFont(ofSize: 15)
-        welcomeSubtitle.textColor = .secondaryLabel
-        welcomeSubtitle.numberOfLines = 0
-
-        let headerStack = UIStackView(arrangedSubviews: [welcomeTitle, welcomeSubtitle])
-        headerStack.axis = .vertical
-        headerStack.spacing = 6
-
-        // Target path card
+        // Path card
+        let pathCard = UIView()
         pathCard.backgroundColor = .secondarySystemBackground
         pathCard.layer.cornerRadius = 16
         pathCard.translatesAutoresizingMaskIntoConstraints = false
@@ -268,34 +309,143 @@ final class RootViewController: UIViewController {
             pathInnerStack.trailingAnchor.constraint(equalTo: pathCard.trailingAnchor, constant: -16)
         ])
 
-        // Section label helper
-        func sectionLabel(_ text: String) -> UILabel {
-            let l = UILabel()
-            l.text = text
-            l.font = .systemFont(ofSize: 13, weight: .semibold)
-            l.textColor = .secondaryLabel
-            return l
+        addArrangedSubview(sectionLabel)
+        addArrangedSubview(pathCard)
+        addArrangedSubview(changePathButton)
+        addArrangedSubview(restoreButton)
+        addArrangedSubview(applyButton)
+        addArrangedSubview(manageBackupsButton)
+        setCustomSpacing(14, after: sectionLabel)
+        setCustomSpacing(14, after: pathCard)
+
+        changePathButton.addAction { [weak self] in self?.tapSetPath() }
+        restoreButton.addAction { [weak self] in self?.tapRestoreOriginal() }
+        applyButton.addAction { [weak self] in self?.tapApplyNew() }
+        manageBackupsButton.addAction { [weak self] in self?.tapManageBackups() }
+
+        refresh()
+    }
+
+    required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func refresh() {
+        pathLabel.text = Settings.targetPath(for: slot)
+        restoreButton.updateSubtitle(
+            LocalStore.hasBackup(for: slot) ? "Put your saved backup back in place" : "No backup saved yet"
+        )
+        applyButton.updateSubtitle(
+            LocalStore.hasNewFile(for: slot) ? "Swap in the file you imported" : "No imported file yet — import one first"
+        )
+    }
+
+    private func tapSetPath() {
+        let alert = UIAlertController(title: "Change Target Path (\(slot.displayName))",
+                                       message: "Enter the full path of the file you want to replace",
+                                       preferredStyle: .alert)
+        alert.addTextField { tf in
+            tf.text = Settings.targetPath(for: self.slot)
+            tf.autocapitalizationType = .none
+            tf.autocorrectionType = .no
         }
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Save", style: .default) { [weak self, weak alert] _ in
+            guard let self, let text = alert?.textFields?.first?.text, !text.isEmpty else { return }
+            Settings.setTargetPath(text, for: self.slot)
+            self.refresh()
+            self.presenter?.showInfo(title: "Saved", message: "Target path updated.")
+        })
+        presenter?.present(alert, animated: true)
+    }
 
-        changePathButton.addTarget(self, action: #selector(tapSetPath), for: .touchUpInside)
-        restoreOriginalButton.addTarget(self, action: #selector(tapRestoreOriginal), for: .touchUpInside)
-        applyNewFileButton.addTarget(self, action: #selector(tapApplyNew), for: .touchUpInside)
-        manageBackupsButton.addTarget(self, action: #selector(tapManageBackups), for: .touchUpInside)
+    private func tapRestoreOriginal() {
+        presenter?.confirmAndRun(
+            title: "Restore Saved Backup",
+            message: "This will replace the current \(slot.displayName) target file with your saved backup copy. Continue?"
+        ) { [slot] in
+            try FileOps.replace(destination: URL(fileURLWithPath: Settings.targetPath(for: slot)),
+                                 withContentsOf: LocalStore.backupFile(for: slot))
+        }
+    }
 
-        let actionsStack = UIStackView(arrangedSubviews: [
-            sectionLabel("ACTIONS"),
-            changePathButton,
-            restoreOriginalButton,
-            applyNewFileButton,
-            manageBackupsButton
-        ])
-        actionsStack.axis = .vertical
-        actionsStack.spacing = 10
-        actionsStack.setCustomSpacing(14, after: actionsStack.arrangedSubviews[0])
+    private func tapApplyNew() {
+        presenter?.confirmAndRun(
+            title: "Apply Imported File",
+            message: "This will replace the current \(slot.displayName) target file with the file you imported. Continue?"
+        ) { [slot] in
+            try FileOps.replace(destination: URL(fileURLWithPath: Settings.targetPath(for: slot)),
+                                 withContentsOf: LocalStore.newFile(for: slot))
+        }
+    }
+
+    private func tapManageBackups() {
+        guard let presenter else { return }
+        presenter.navigationController?.pushViewController(BackupViewController(slot: slot), animated: true)
+    }
+}
+
+// MARK: - Root View Controller
+
+final class RootViewController: UIViewController {
+
+    private let scrollView = UIScrollView()
+    private let contentStack = UIStackView()
+
+    private let welcomeTitle = UILabel()
+    private let welcomeSubtitle = UILabel()
+
+    private var slotSections: [SlotSectionView] = []
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "Asset Swapper"
+        view.backgroundColor = .systemGroupedBackground
+        setupUI()
+
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(sharedFileReceived(_:)),
+            name: .receivedSharedFile, object: nil
+        )
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        slotSections.forEach { $0.refresh() }
+    }
+
+    private func setupUI() {
+        // Scroll container
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.alwaysBounceVertical = true
+        view.addSubview(scrollView)
+
+        contentStack.axis = .vertical
+        contentStack.spacing = 28
+        contentStack.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.addSubview(contentStack)
+
+        // Welcome header
+        welcomeTitle.text = "Welcome back 👋"
+        welcomeTitle.font = .systemFont(ofSize: 28, weight: .bold)
+        welcomeTitle.textColor = .label
+
+        welcomeSubtitle.text = "Manage and swap your cached game asset files in just a couple of taps."
+        welcomeSubtitle.font = .systemFont(ofSize: 15)
+        welcomeSubtitle.textColor = .secondaryLabel
+        welcomeSubtitle.numberOfLines = 0
+
+        let headerStack = UIStackView(arrangedSubviews: [welcomeTitle, welcomeSubtitle])
+        headerStack.axis = .vertical
+        headerStack.spacing = 6
 
         contentStack.addArrangedSubview(headerStack)
-        contentStack.addArrangedSubview(pathCard)
-        contentStack.addArrangedSubview(actionsStack)
+
+        // One independent section per asset slot
+        for slot in AssetSlot.allCases {
+            let section = SlotSectionView(slot: slot)
+            section.presenter = self
+            slotSections.append(section)
+            contentStack.addArrangedSubview(section)
+        }
 
         NSLayoutConstraint.activate([
             scrollView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
@@ -311,68 +461,40 @@ final class RootViewController: UIViewController {
         ])
     }
 
-    private func refreshPathLabel() {
-        pathLabel.text = Settings.targetPath
-    }
+    // MARK: Shared file handling
 
-    private func refreshSubtitles() {
-        restoreOriginalButton.updateSubtitle(
-            LocalStore.hasBackup ? "Put your saved backup back in place" : "No backup saved yet"
-        )
-        applyNewFileButton.updateSubtitle(
-            LocalStore.hasNewFile ? "Swap in the file you imported" : "No imported file yet — import one first"
-        )
-    }
+    /// A file was shared into the app via the system Share Sheet. Since there are now
+    /// multiple independent slots, ask which one it should be staged for.
+    @objc private func sharedFileReceived(_ note: Notification) {
+        guard let url = note.userInfo?[Notification.SharedFileKeys.url] as? URL else { return }
 
-    // MARK: Actions
-
-    @objc private func tapSetPath() {
-        let alert = UIAlertController(title: "Change Target Path",
-                                       message: "Enter the full path of the file you want to replace",
-                                       preferredStyle: .alert)
-        alert.addTextField { tf in
-            tf.text = Settings.targetPath
-            tf.autocapitalizationType = .none
-            tf.autocorrectionType = .no
+        let sheet = UIAlertController(title: "File Received",
+                                       message: "Which target should this file be staged for?",
+                                       preferredStyle: .actionSheet)
+        for slot in AssetSlot.allCases {
+            sheet.addAction(UIAlertAction(title: slot.displayName, style: .default) { [weak self] _ in
+                self?.stageSharedFile(url, for: slot)
+            })
         }
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Save", style: .default) { [weak self, weak alert] _ in
-            guard let text = alert?.textFields?.first?.text, !text.isEmpty else { return }
-            Settings.targetPath = text
-            self?.refreshPathLabel()
-            self?.showInfo(title: "Saved", message: "Target path updated.")
-        })
-        present(alert, animated: true)
+        sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        present(sheet, animated: true)
     }
 
-    @objc private func tapRestoreOriginal() {
-        confirmAndRun(title: "Restore Saved Backup",
-                      message: "This will replace the current target file with your saved backup copy. Continue?") {
-            try FileOps.replace(destination: URL(fileURLWithPath: Settings.targetPath),
-                                 withContentsOf: LocalStore.backupFile)
+    private func stageSharedFile(_ url: URL, for slot: AssetSlot) {
+        do {
+            try FileOps.replace(destination: LocalStore.newFile(for: slot), withContentsOf: url)
+            slotSections.first(where: { $0.slot as AssetSlot == slot })?.refresh()
+            showInfo(title: "Saved", message: "File staged for \(slot.displayName). Use \"Apply Imported File\" in that section to swap it in.")
+        } catch {
+            showInfo(title: "Error", message: error.localizedDescription)
         }
     }
+}
 
-    @objc private func tapApplyNew() {
-        confirmAndRun(title: "Apply Imported File",
-                      message: "This will replace the current target file with the file you imported. Continue?") {
-            try FileOps.replace(destination: URL(fileURLWithPath: Settings.targetPath),
-                                 withContentsOf: LocalStore.newFile)
-        }
-    }
+// MARK: - Shared present/confirm helpers used by both the root VC and slot sections
 
-    @objc private func tapManageBackups() {
-        navigationController?.pushViewController(BackupViewController(), animated: true)
-    }
-
-    @objc private func sharedFileReceived() {
-        refreshSubtitles()
-        showInfo(title: "File Received", message: "A shared file was saved. Use \"Apply Imported File\" to swap it in.")
-    }
-
-    // MARK: Helpers
-
-    private func confirmAndRun(title: String, message: String, action: @escaping () throws -> Void) {
+extension UIViewController {
+    func confirmAndRun(title: String, message: String, action: @escaping () throws -> Void) {
         let confirm = UIAlertController(title: title, message: message, preferredStyle: .alert)
         confirm.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         confirm.addAction(UIAlertAction(title: "Replace", style: .destructive) { [weak self] _ in
@@ -393,9 +515,11 @@ final class RootViewController: UIViewController {
     }
 }
 
-// MARK: - Backup View Controller
+// MARK: - Backup View Controller (now scoped to a single AssetSlot)
 
 final class BackupViewController: UIViewController, UIDocumentPickerDelegate {
+
+    private let slot: AssetSlot
 
     private let saveCurrentButton = CardButton(icon: "square.and.arrow.down.fill",
                                                 tint: .systemGreen,
@@ -407,23 +531,30 @@ final class BackupViewController: UIViewController, UIDocumentPickerDelegate {
                                                title: "Import a New File",
                                                subtitle: "Pick a file from your device to use later")
 
+    init(slot: AssetSlot) {
+        self.slot = slot
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "Manage Files"
         view.backgroundColor = .systemGroupedBackground
 
         let headerLabel = UILabel()
-        headerLabel.text = "Backups & Imports"
+        headerLabel.text = slot.displayName
         headerLabel.font = .systemFont(ofSize: 24, weight: .bold)
 
         let subLabel = UILabel()
-        subLabel.text = "Save a copy of your current file, or bring in a new one to apply later."
+        subLabel.text = "Save a copy of this file, or bring in a new one to apply later."
         subLabel.font = .systemFont(ofSize: 14)
         subLabel.textColor = .secondaryLabel
         subLabel.numberOfLines = 0
 
-        saveCurrentButton.addTarget(self, action: #selector(tapSaveCurrentAsBackup), for: .touchUpInside)
-        importFileButton.addTarget(self, action: #selector(tapImportNew), for: .touchUpInside)
+        saveCurrentButton.addAction { [weak self] in self?.tapSaveCurrentAsBackup() }
+        importFileButton.addAction { [weak self] in self?.tapImportNew() }
 
         let stack = UIStackView(arrangedSubviews: [headerLabel, subLabel, saveCurrentButton, importFileButton])
         stack.axis = .vertical
@@ -440,17 +571,17 @@ final class BackupViewController: UIViewController, UIDocumentPickerDelegate {
         ])
     }
 
-    @objc private func tapSaveCurrentAsBackup() {
-        let source = URL(fileURLWithPath: Settings.targetPath)
+    private func tapSaveCurrentAsBackup() {
+        let source = URL(fileURLWithPath: Settings.targetPath(for: slot))
         do {
-            try FileOps.replace(destination: LocalStore.backupFile, withContentsOf: source)
-            showInfo(title: "Backed Up", message: "Current file saved as your backup.")
+            try FileOps.replace(destination: LocalStore.backupFile(for: slot), withContentsOf: source)
+            showInfo(title: "Backed Up", message: "Current \(slot.displayName) file saved as your backup.")
         } catch {
             showInfo(title: "Error", message: error.localizedDescription)
         }
     }
 
-    @objc private func tapImportNew() {
+    private func tapImportNew() {
         let picker: UIDocumentPickerViewController
         if #available(iOS 14.0, *) {
             picker = UIDocumentPickerViewController(forOpeningContentTypes: [.data], asCopy: true)
@@ -464,17 +595,11 @@ final class BackupViewController: UIViewController, UIDocumentPickerDelegate {
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
         guard let picked = urls.first else { return }
         do {
-            try FileOps.replace(destination: LocalStore.newFile, withContentsOf: picked)
-            showInfo(title: "Saved", message: "File imported and ready to apply.")
+            try FileOps.replace(destination: LocalStore.newFile(for: slot), withContentsOf: picked)
+            showInfo(title: "Saved", message: "File imported and ready to apply to \(slot.displayName).")
         } catch {
             showInfo(title: "Error", message: error.localizedDescription)
         }
-    }
-
-    private func showInfo(title: String, message: String) {
-        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-        present(alert, animated: true)
     }
 }
 
@@ -498,14 +623,26 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     // Handles files shared to this app via the system Share Sheet ("Copy to <App>" / "Open in <App>").
+    // We no longer assume a single target slot here — we just hand the raw URL off to the
+    // root screen, which asks the user which slot (Main Cache File / Avatar Indexer) to stage it for.
     func application(_ app: UIApplication, open url: URL,
                       options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
         let accessed = url.startAccessingSecurityScopedResource()
-        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+
+        // Copy immediately into a stable temp location since the security-scoped URL
+        // may become invalid once this method returns.
+        let stagedURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension(url.pathExtension)
+
         do {
-            try FileOps.replace(destination: LocalStore.newFile, withContentsOf: url)
-            NotificationCenter.default.post(name: .receivedSharedFile, object: nil)
+            try FileOps.replace(destination: stagedURL, withContentsOf: url)
+            if accessed { url.stopAccessingSecurityScopedResource() }
+            NotificationCenter.default.post(name: .receivedSharedFile,
+                                             object: nil,
+                                             userInfo: [Notification.SharedFileKeys.url: stagedURL])
         } catch {
+            if accessed { url.stopAccessingSecurityScopedResource() }
             // Ignore; user can retry via the in-app import button.
         }
         return true
@@ -514,4 +651,10 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
 
 extension Notification.Name {
     static let receivedSharedFile = Notification.Name("receivedSharedFile")
+}
+
+extension Notification {
+    enum SharedFileKeys {
+        static let url = "url"
+    }
 }
