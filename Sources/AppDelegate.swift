@@ -442,8 +442,6 @@ final class RootViewController: UIViewController {
         let appStack = UIStackView(arrangedSubviews: [appNameTitle, appNameValLabel])
         
         let bundleIdTitle = createStaticLabel("Bundle ID:")
-        bundleIdValLabel.font = .systemFont(ofSize: 13, weight: .mono // standard string formatting fallback fallback
-        )
         bundleIdValLabel.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
         let bundleStack = UIStackView(arrangedSubviews: [bundleIdTitle, bundleIdValLabel])
         
@@ -485,7 +483,6 @@ final class RootViewController: UIViewController {
         uuidValLabel.textColor = result.isDetected ? .label : .systemRed
         
         if result.isDetected {
-            // Reset fallback variables to match detected directory path
             slotSections.forEach { $0.refresh() }
             if displaySuccessAlert {
                 showInfo(title: "Detection Match", message: "Successfully tracked target directory:\n\(result.uuid)")
@@ -635,5 +632,17 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             if accessed { url.stopAccessingSecurityScopedResource() }
         }
         return true
+    }
+}
+
+// MARK: - Notification Configurations
+
+extension Notification.Name {
+    static let receivedSharedFile = Notification.Name("receivedSharedFile")
+}
+
+extension Notification {
+    enum SharedFileKeys {
+        static let url = "url"
     }
 }
