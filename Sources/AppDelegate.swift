@@ -1,49 +1,67 @@
 import UIKit
 import UniformTypeIdentifiers
 
+// MARK: - App Path Resolver (Auto-Detect UUID)
+
+enum AppPathResolver {
+    static let targetBundleID = "com.dts.freefiremax"
+    static let applicationsBaseDir = "/var/mobile/Containers/Data/Application"
+    
+    /// Scans the application data containers to find the one matching the target bundle ID.
+    static func findDataContainerPath() -> String? {
+        let fm = FileManager.default
+        let baseDirURL = URL(fileURLWithPath: applicationsBaseDir)
+        
+        guard let dirs = try? fm.contentsOfDirectory(at: baseDirURL, includingPropertiesForKeys: nil, options: .skipsHiddenFiles) else {
+            return nil
+        }
+        
+        for dir in dirs {
+            let metadataURL = dir.appendingPathComponent(".com.apple.mobile_container_manager.metadata.plist")
+            
+            if let data = try? Data(contentsOf: metadataURL),
+               let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+               let identifier = plist["MCMMetadataIdentifier"] as? String,
+               identifier == targetBundleID {
+                return dir.path
+            }
+        }
+        
+        return nil
+    }
+}
+
 // MARK: - Asset slots
 
-/// Each slot represents one independently-managed target file: its own path setting,
-/// its own saved backup, and its own "imported" staging file.
+/// Represents the independently-managed target file.
 enum AssetSlot: CaseIterable {
     case primary
-    case avatarIndexer
 
     var displayName: String {
-        switch self {
-        case .primary: return "Main Cache File"
-        case .avatarIndexer: return "Avatar Indexer"
-        }
+        return "Main Cache File"
     }
 
     var defaultPath: String {
-        switch self {
-        case .primary:
-            return "/var/mobile/Containers/Data/Application/CD69FE41-53FF-4EE8-A0BC-22181F943960/Documents/contentcache/Compulsory/ios/gameassetbundles/cache_res.CfnFf59sr1SbsqQ6JqTKsEusjKs~3D"
-        case .avatarIndexer:
-            return "/var/mobile/Containers/Data/Application/CD69FE41-53FF-4EE8-A0BC-22181F943960/Documents/contentcache/Compulsory/ios/gameassetbundles/avatar/assetindexer.H5ak1JM1Eck~2FxRcJrEp~2FMzeuqmY~3D"
+        let suffix = "/Documents/contentcache/Compulsory/ios/gameassetbundles/cache_res.CfnFf59sr1SbsqQ6JqTKsEusjKs~3D"
+        
+        if let detectedPath = AppPathResolver.findDataContainerPath() {
+            return detectedPath + suffix
         }
+        
+        // Fallback if the folder isn't found or permissions are lacking
+        return "/var/mobile/Containers/Data/Application/UNKNOWN_UUID" + suffix
     }
 
     fileprivate var pathDefaultsKey: String {
-        switch self {
-        case .primary: return "targetFilePath"
-        case .avatarIndexer: return "targetFilePath_avatarIndexer"
-        }
+        return "targetFilePath"
     }
 
     fileprivate var backupFileName: String {
-        switch self {
-        case .primary: return "backup_file"
-        case .avatarIndexer: return "backup_file_avatar_indexer"
-        }
+        return "backup_file"
     }
 
     fileprivate var newFileName: String {
-        switch self {
-        case .primary: return "new_file"
-        case .avatarIndexer: return "new_file_avatar_indexer"
-        }
+        return "new_file"
     }
 }
 
@@ -118,7 +136,7 @@ enum FileOps {
     }
 }
 
-// MARK: - Closure-based control actions (so we can capture a slot per-button without objc selector fan-out)
+// MARK: - Closure-based control actions
 
 extension UIControl {
     private final class ClosureSleeve {
@@ -463,28 +481,19 @@ final class RootViewController: UIViewController {
 
     // MARK: Shared file handling
 
-    /// A file was shared into the app via the system Share Sheet. Since there are now
-    /// multiple independent slots, ask which one it should be staged for.
+    /// A file was shared into the app via the system Share Sheet.
     @objc private func sharedFileReceived(_ note: Notification) {
         guard let url = note.userInfo?[Notification.SharedFileKeys.url] as? URL else { return }
-
-        let sheet = UIAlertController(title: "File Received",
-                                       message: "Which target should this file be staged for?",
-                                       preferredStyle: .actionSheet)
-        for slot in AssetSlot.allCases {
-            sheet.addAction(UIAlertAction(title: slot.displayName, style: .default) { [weak self] _ in
-                self?.stageSharedFile(url, for: slot)
-            })
-        }
-        sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        present(sheet, animated: true)
+        
+        // Since there is only one slot now, we automatically stage it for .primary
+        stageSharedFile(url, for: .primary)
     }
 
     private func stageSharedFile(_ url: URL, for slot: AssetSlot) {
         do {
             try FileOps.replace(destination: LocalStore.newFile(for: slot), withContentsOf: url)
             slotSections.first(where: { $0.slot as AssetSlot == slot })?.refresh()
-            showInfo(title: "Saved", message: "File staged for \(slot.displayName). Use \"Apply Imported File\" in that section to swap it in.")
+            showInfo(title: "Saved", message: "File staged for \(slot.displayName). Use \"Apply Imported File\" to swap it in.")
         } catch {
             showInfo(title: "Error", message: error.localizedDescription)
         }
@@ -515,7 +524,7 @@ extension UIViewController {
     }
 }
 
-// MARK: - Backup View Controller (now scoped to a single AssetSlot)
+// MARK: - Backup View Controller
 
 final class BackupViewController: UIViewController, UIDocumentPickerDelegate {
 
@@ -622,15 +631,10 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         return true
     }
 
-    // Handles files shared to this app via the system Share Sheet ("Copy to <App>" / "Open in <App>").
-    // We no longer assume a single target slot here — we just hand the raw URL off to the
-    // root screen, which asks the user which slot (Main Cache File / Avatar Indexer) to stage it for.
     func application(_ app: UIApplication, open url: URL,
                       options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
         let accessed = url.startAccessingSecurityScopedResource()
 
-        // Copy immediately into a stable temp location since the security-scoped URL
-        // may become invalid once this method returns.
         let stagedURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension(url.pathExtension)
@@ -643,7 +647,6 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                                              userInfo: [Notification.SharedFileKeys.url: stagedURL])
         } catch {
             if accessed { url.stopAccessingSecurityScopedResource() }
-            // Ignore; user can retry via the in-app import button.
         }
         return true
     }
