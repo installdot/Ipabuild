@@ -12,8 +12,8 @@ struct AppDetectionInfo {
 }
 
 enum AppPathResolver {
-    static let targetBundleID = "com.dts.freefiremax"
-    static let targetAppName = "Free Fire Max"
+    static let targetBundleID = "com.dts.freefireth"
+    static let targetAppName = "Free Fire"
     static let applicationsBaseDir = "/var/mobile/Containers/Data/Application"
     
     /// Scans the application data containers to find the one matching the target bundle ID.
