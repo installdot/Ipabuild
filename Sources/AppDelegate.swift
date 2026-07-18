@@ -43,88 +43,91 @@ enum AppPathResolver {
     }
 }
 
-// MARK: - Asset slots
+// MARK: - Config Mode Targets
 
-enum AssetSlot: CaseIterable {
-    case primary
-
+enum ConfigMode {
+    case fortyPercent
+    case oneHundredPercent
+    
     var displayName: String {
-        return "Main Cache File"
+        switch self {
+        case .fortyPercent: return "40% Asset Modifier"
+        case .oneHundredPercent: return "100% Full Variant"
+        }
     }
+}
 
-    var defaultPath: String {
-        let suffix = "/Documents/contentcache/Compulsory/ios/gameassetbundles/cache_res.CfnFf59sr1SbsqQ6JqTKsEusjKs~3D"
+// MARK: - Persistent Target Resolution
+
+enum AssetConfig {
+    static var targetPath: String {
+        let suffix = "/Documents/contentcache/Compulsory/ios/gameassetbundles/avatar/assetindexer.H5ak1JM1Eck~2FxRcJrEp~2FMzeuqmY~3D"
         let detection = AppPathResolver.resolveApp()
-        
         if detection.isDetected {
             return detection.fullPath + suffix
         }
         return "/var/mobile/Containers/Data/Application/UNKNOWN_UUID" + suffix
     }
-
-    fileprivate var pathDefaultsKey: String { return "targetFilePath" }
-    fileprivate var backupFileName: String { return "backup_file" }
-    fileprivate var newFileName: String { return "new_file" }
 }
 
-// MARK: - Persistent settings
-
-enum Settings {
-    static func targetPath(for slot: AssetSlot) -> String {
-        UserDefaults.standard.string(forKey: slot.pathDefaultsKey) ?? slot.defaultPath
-    }
-
-    static func setTargetPath(_ path: String, for slot: AssetSlot) {
-        UserDefaults.standard.set(path, forKey: slot.pathDefaultsKey)
-    }
-}
-
-// MARK: - Local storage for the Backup / New copies
+// MARK: - Sandboxed Internal Storage
 
 enum LocalStore {
     static var documentsDir: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     }
-
-    static func backupFile(for slot: AssetSlot) -> URL { documentsDir.appendingPathComponent(slot.backupFileName) }
-    static func newFile(for slot: AssetSlot) -> URL { documentsDir.appendingPathComponent(slot.newFileName) }
-    static func hasBackup(for slot: AssetSlot) -> Bool { FileManager.default.fileExists(atPath: backupFile(for: slot).path) }
-    static func hasNewFile(for slot: AssetSlot) -> Bool { FileManager.default.fileExists(atPath: newFile(for: slot).path) }
+    
+    static var file40URL: URL { documentsDir.appendingPathComponent("imported_40_percent.data") }
+    static var file100URL: URL { documentsDir.appendingPathComponent("imported_100_percent.data") }
+    static var automaticBackupURL: URL { documentsDir.appendingPathComponent("original_stock_backup.bak") }
+    
+    static func hasFile(for mode: ConfigMode) -> Bool {
+        let path = mode == .fortyPercent ? file40URL.path : file100URL.path
+        return FileManager.default.fileExists(atPath: path)
+    }
+    
+    static func hasBackup() -> Bool {
+        return FileManager.default.fileExists(atPath: automaticBackupURL.path)
+    }
 }
 
-// MARK: - File operations
+// MARK: - High-Speed File Transport Engine
 
 enum FileOps {
-    enum OpError: Error, LocalizedError {
-        case sourceMissing(String)
-        case copyFailed(String)
-
-        var errorDescription: String? {
-            switch self {
-            case .sourceMissing(let p): return "File not found: \(p)"
-            case .copyFailed(let msg): return "Copy failed: \(msg)"
-            }
-        }
-    }
-
-    static func replace(destination: URL, withContentsOf source: URL) throws {
+    static func applyConfig(from sourceURL: URL, to livePath: String) throws {
         let fm = FileManager.default
-        guard fm.fileExists(atPath: source.path) else { throw OpError.sourceMissing(source.path) }
-        do {
-            if fm.fileExists(atPath: destination.path) {
-                try fm.removeItem(at: destination)
-            } else {
-                let dir = destination.deletingLastPathComponent()
-                try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-            }
-            try fm.copyItem(at: source, to: destination)
-        } catch {
-            throw OpError.copyFailed(error.localizedDescription)
+        let destinationURL = URL(fileURLWithPath: livePath)
+        
+        // 1. Safe Auto-Backup to local App Documents directory before modifying system layers
+        if fm.fileExists(atPath: destinationURL.path) && !LocalStore.hasBackup() {
+            try? fm.copyItem(at: destinationURL, to: LocalStore.automaticBackupURL)
         }
+        
+        // 2. Clear target runtime vectors
+        if fm.fileExists(atPath: destinationURL.path) {
+            try fm.removeItem(at: destinationURL)
+        } else {
+            let parentDir = destinationURL.deletingLastPathComponent()
+            try fm.createDirectory(at: parentDir, withIntermediateDirectories: true)
+        }
+        
+        // 3. Mount working configuration asset payload
+        try fm.copyItem(at: sourceURL, to: destinationURL)
+    }
+    
+    static func restoreStockBackup(to livePath: String) throws {
+        let fm = FileManager.default
+        let destinationURL = URL(fileURLWithPath: livePath)
+        guard fm.fileExists(atPath: LocalStore.automaticBackupURL.path) else { return }
+        
+        if fm.fileExists(atPath: destinationURL.path) {
+            try fm.removeItem(at: destinationURL)
+        }
+        try fm.copyItem(at: LocalStore.automaticBackupURL, to: destinationURL)
     }
 }
 
-// MARK: - Closure-based control actions
+// MARK: - Functional Closure Extensions
 
 extension UIControl {
     private final class ClosureSleeve {
@@ -140,13 +143,13 @@ extension UIControl {
     }
 }
 
-// MARK: - Reusable "card" button
+// MARK: - UI Layer: Reusable Card Controls
 
 final class CardButton: UIControl {
     private let iconView = UIImageView()
     private let titleLabel = UILabel()
     private let subtitleLabel = UILabel()
-    private let chevron = UIImageView(image: UIImage(systemName: "chevron.right"))
+    private let actionIndicator = UIImageView(image: UIImage(systemName: "arrow.right.circle.fill"))
     private let container = UIView()
 
     init(icon: String, tint: UIColor, title: String, subtitle: String) {
@@ -160,7 +163,7 @@ final class CardButton: UIControl {
         addSubview(container)
 
         let iconBackground = UIView()
-        iconBackground.backgroundColor = tint.withAlphaComponent(0.15)
+        iconBackground.backgroundColor = tint.withAlphaComponent(0.12)
         iconBackground.layer.cornerRadius = 12
         iconBackground.translatesAutoresizingMaskIntoConstraints = false
 
@@ -170,16 +173,16 @@ final class CardButton: UIControl {
         iconView.translatesAutoresizingMaskIntoConstraints = false
 
         titleLabel.text = title
-        titleLabel.font = .systemFont(ofSize: 17, weight: .semibold)
+        titleLabel.font = .systemFont(ofSize: 16, weight: .bold)
         titleLabel.textColor = .label
 
         subtitleLabel.text = subtitle
-        subtitleLabel.font = .systemFont(ofSize: 13)
+        subtitleLabel.font = .systemFont(ofSize: 12)
         subtitleLabel.textColor = .secondaryLabel
         subtitleLabel.numberOfLines = 2
 
-        chevron.tintColor = .tertiaryLabel
-        chevron.translatesAutoresizingMaskIntoConstraints = false
+        actionIndicator.tintColor = tint.withAlphaComponent(0.7)
+        actionIndicator.translatesAutoresizingMaskIntoConstraints = false
 
         let textStack = UIStackView(arrangedSubviews: [titleLabel, subtitleLabel])
         textStack.axis = .vertical
@@ -189,33 +192,33 @@ final class CardButton: UIControl {
         container.addSubview(iconBackground)
         iconBackground.addSubview(iconView)
         container.addSubview(textStack)
-        container.addSubview(chevron)
+        container.addSubview(actionIndicator)
 
         NSLayoutConstraint.activate([
             container.topAnchor.constraint(equalTo: topAnchor),
             container.bottomAnchor.constraint(equalTo: bottomAnchor),
             container.leadingAnchor.constraint(equalTo: leadingAnchor),
             container.trailingAnchor.constraint(equalTo: trailingAnchor),
-            heightAnchor.constraint(equalToConstant: 72),
+            heightAnchor.constraint(equalToConstant: 76),
 
-            iconBackground.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
+            iconBackground.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
             iconBackground.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            iconBackground.widthAnchor.constraint(equalToConstant: 44),
-            iconBackground.heightAnchor.constraint(equalToConstant: 44),
+            iconBackground.widthAnchor.constraint(equalToConstant: 46),
+            iconBackground.heightAnchor.constraint(equalToConstant: 46),
 
             iconView.centerXAnchor.constraint(equalTo: iconBackground.centerXAnchor),
             iconView.centerYAnchor.constraint(equalTo: iconBackground.centerYAnchor),
-            iconView.widthAnchor.constraint(equalToConstant: 22),
-            iconView.heightAnchor.constraint(equalToConstant: 22),
+            iconView.widthAnchor.constraint(equalToConstant: 24),
+            iconView.heightAnchor.constraint(equalToConstant: 24),
 
             textStack.leadingAnchor.constraint(equalTo: iconBackground.trailingAnchor, constant: 12),
-            textStack.trailingAnchor.constraint(lessThanOrEqualTo: chevron.leadingAnchor, constant: -8),
+            textStack.trailingAnchor.constraint(lessThanOrEqualTo: actionIndicator.leadingAnchor, constant: -8),
             textStack.centerYAnchor.constraint(equalTo: container.centerYAnchor),
 
-            chevron.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
-            chevron.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            chevron.widthAnchor.constraint(equalToConstant: 14),
-            chevron.heightAnchor.constraint(equalToConstant: 14)
+            actionIndicator.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
+            actionIndicator.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            actionIndicator.widthAnchor.constraint(equalToConstant: 22),
+            actionIndicator.heightAnchor.constraint(equalToConstant: 22)
         ])
 
         addTarget(self, action: #selector(touchDown), for: .touchDown)
@@ -225,193 +228,98 @@ final class CardButton: UIControl {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func updateSubtitle(_ text: String) { subtitleLabel.text = text }
+    func updateIndicatorIcon(_ systemName: String) { actionIndicator.image = UIImage(systemName: systemName) }
 
     @objc private func touchDown() {
-        UIView.animate(withDuration: 0.12) {
-            self.container.transform = CGAffineTransform(scaleX: 0.97, y: 0.97)
-            self.container.alpha = 0.85
+        UIView.animate(withDuration: 0.1) {
+            self.container.transform = CGAffineTransform(scaleX: 0.98, y: 0.98)
+            self.container.alpha = 0.88
         }
     }
 
     @objc private func touchUp() {
-        UIView.animate(withDuration: 0.15) {
+        UIView.animate(withDuration: 0.12) {
             self.container.transform = .identity
             self.container.alpha = 1.0
         }
     }
 }
 
-// MARK: - Slot Section View
+// MARK: - Main Application Dashboard View Controller
 
-final class SlotSectionView: UIStackView {
-    let slot: AssetSlot
-
-    private let pathLabel = UILabel()
-    private let restoreButton: CardButton
-    private let applyButton: CardButton
-
-    weak var presenter: UIViewController?
-
-    init(slot: AssetSlot) {
-        self.slot = slot
-
-        let changePathButton = CardButton(icon: "folder.badge.gearshape", tint: .systemIndigo, title: "Change Target Path", subtitle: "Choose which file gets replaced")
-        restoreButton = CardButton(icon: "arrow.uturn.backward.circle.fill", tint: .systemGreen, title: "Restore Saved Backup", subtitle: "Put your saved backup back in place")
-        applyButton = CardButton(icon: "shippingbox.fill", tint: .systemOrange, title: "Apply Imported File", subtitle: "Swap in the file you imported")
-        let manageBackupsButton = CardButton(icon: "externaldrive.fill.badge.plus", tint: .systemBlue, title: "Manage Files", subtitle: "Save a backup or import a new file")
-
-        super.init(frame: .zero)
-        translatesAutoresizingMaskIntoConstraints = false
-        axis = .vertical
-        spacing = 10
-
-        let sectionLabel = UILabel()
-        sectionLabel.text = slot.displayName.uppercased()
-        sectionLabel.font = .systemFont(ofSize: 13, weight: .semibold)
-        sectionLabel.textColor = .secondaryLabel
-
-        let pathCard = UIView()
-        pathCard.backgroundColor = .secondarySystemBackground
-        pathCard.layer.cornerRadius = 16
-        pathCard.translatesAutoresizingMaskIntoConstraints = false
-
-        let pathTitleLabel = UILabel()
-        pathTitleLabel.text = "CURRENT TARGET FILE"
-        pathTitleLabel.font = .systemFont(ofSize: 11, weight: .semibold)
-        pathTitleLabel.textColor = .tertiaryLabel
-
-        pathLabel.numberOfLines = 0
-        pathLabel.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-        pathLabel.textColor = .label
-
-        let pathInnerStack = UIStackView(arrangedSubviews: [pathTitleLabel, pathLabel])
-        pathInnerStack.axis = .vertical
-        pathInnerStack.spacing = 6
-        pathInnerStack.translatesAutoresizingMaskIntoConstraints = false
-        pathCard.addSubview(pathInnerStack)
-
-        NSLayoutConstraint.activate([
-            pathInnerStack.topAnchor.constraint(equalTo: pathCard.topAnchor, constant: 14),
-            pathInnerStack.bottomAnchor.constraint(equalTo: pathCard.bottomAnchor, constant: -14),
-            pathInnerStack.leadingAnchor.constraint(equalTo: pathCard.leadingAnchor, constant: 16),
-            pathInnerStack.trailingAnchor.constraint(equalTo: pathCard.trailingAnchor, constant: -16)
-        ])
-
-        addArrangedSubview(sectionLabel)
-        addArrangedSubview(pathCard)
-        addArrangedSubview(changePathButton)
-        addArrangedSubview(restoreButton)
-        addArrangedSubview(applyButton)
-        addArrangedSubview(manageBackupsButton)
-        setCustomSpacing(14, after: sectionLabel)
-        setCustomSpacing(14, after: pathCard)
-
-        changePathButton.addAction { [weak self] in self?.tapSetPath() }
-        restoreButton.addAction { [weak self] in self?.tapRestoreOriginal() }
-        applyButton.addAction { [weak self] in self?.tapApplyNew() }
-        manageBackupsButton.addAction { [weak self] in self?.tapManageBackups() }
-
-        refresh()
-    }
-
-    required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    func refresh() {
-        pathLabel.text = Settings.targetPath(for: slot)
-        restoreButton.updateSubtitle(LocalStore.hasBackup(for: slot) ? "Put your saved backup back in place" : "No backup saved yet")
-        applyButton.updateSubtitle(LocalStore.hasNewFile(for: slot) ? "Swap in the file you imported" : "No imported file yet — import one first")
-    }
-
-    private func tapSetPath() {
-        let alert = UIAlertController(title: "Change Target Path", message: "Enter the full path of the file you want to replace", preferredStyle: .alert)
-        alert.addTextField { tf in
-            tf.text = Settings.targetPath(for: self.slot)
-            tf.autocapitalizationType = .none
-            tf.autocorrectionType = .no
-        }
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Save", style: .default) { [weak self, weak alert] _ in
-            guard let self, let text = alert?.textFields?.first?.text, !text.isEmpty else { return }
-            Settings.setTargetPath(text, for: self.slot)
-            self.refresh()
-            self.presenter?.showInfo(title: "Saved", message: "Target path updated.")
-        })
-        presenter?.present(alert, animated: true)
-    }
-
-    private func tapRestoreOriginal() {
-        presenter?.confirmAndRun(title: "Restore Saved Backup", message: "Replace the asset file with your backup?") { [slot] in
-            try FileOps.replace(destination: URL(fileURLWithPath: Settings.targetPath(for: slot)), withContentsOf: LocalStore.backupFile(for: slot))
-        }
-    }
-
-    private func tapApplyNew() {
-        presenter?.confirmAndRun(title: "Apply Imported File", message: "Replace the target file with your imported file?") { [slot] in
-            try FileOps.replace(destination: URL(fileURLWithPath: Settings.targetPath(for: slot)), withContentsOf: LocalStore.newFile(for: slot))
-        }
-    }
-
-    private func tapManageBackups() {
-        guard let presenter else { return }
-        presenter.navigationController?.pushViewController(BackupViewController(slot: slot), animated: true)
-    }
-}
-
-// MARK: - Root View Controller
-
-final class RootViewController: UIViewController {
+final class RootViewController: UIViewController, UIDocumentPickerDelegate {
 
     private let scrollView = UIScrollView()
     private let contentStack = UIStackView()
-
-    // App Visual Detection Info Panel Elements
+    
+    // Status Information Elements
     private let infoCard = UIView()
     private let appNameValLabel = UILabel()
     private let bundleIdValLabel = UILabel()
     private let uuidValLabel = UILabel()
-    private let detectButton = CardButton(icon: "arrow.clockwise.icloud.fill", tint: .systemTeal, title: "Detect App Container Path", subtitle: "Scan the file system for Free Fire Max")
+    private let pathPreviewLabel = UILabel()
 
-    private var slotSections: [SlotSectionView] = []
+    // Control Interface Elements
+    private let import40Button = CardButton(icon: "doc.badge.plus", tint: .systemBlue, title: "Import 40% Variant Payload", subtitle: "Load file into app documents storage")
+    private let apply40Button = CardButton(icon: "bolt.circle.fill", tint: .systemOrange, title: "Instantly Inject 40%", subtitle: "No confirmations; active configuration changes instantly")
+    
+    private let import100Button = CardButton(icon: "doc.badge.plus", tint: .systemPurple, title: "Import 100% Variant Payload", subtitle: "Load file into app documents storage")
+    private let apply100Button = CardButton(icon: "flash.diagonal.fill", tint: .systemRed, title: "Instantly Inject 100%", subtitle: "No confirmations; active configuration changes instantly")
+    
+    private let restoreStockButton = CardButton(icon: "arrow.3.trianglepath", tint: .systemGreen, title: "Restore Original Asset Layout", subtitle: "Revert back using local documents fallback cache")
+
+    private var activePickingMode: ConfigMode?
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "Asset Swapper"
+        title = "Fast Asset Swapper"
         view.backgroundColor = .systemGroupedBackground
-        setupUI()
-        runDetection(displaySuccessAlert: false)
-
-        NotificationCenter.default.addObserver(self, selector: #selector(sharedFileReceived(_:)), name: .receivedSharedFile, object: nil)
+        setupLayoutStructure()
+        runEnvironmentScan()
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        slotSections.forEach { $0.refresh() }
+        evaluateFileStatusStates()
     }
 
-    private func setupUI() {
+    private func setupLayoutStructure() {
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.alwaysBounceVertical = true
         view.addSubview(scrollView)
 
         contentStack.axis = .vertical
-        contentStack.spacing = 24
+        contentStack.spacing = 18
         contentStack.translatesAutoresizingMaskIntoConstraints = false
         scrollView.addSubview(contentStack)
 
-        setupInfoCard()
-        contentStack.addArrangedSubview(infoCard)
-        contentStack.addArrangedSubview(detectButton)
+        setupTargetTrackingCard()
         
-        detectButton.addAction { [weak self] in
-            self?.runDetection(displaySuccessAlert: true)
-        }
+        // Assemble View Tree Component Hierarchy
+        contentStack.addArrangedSubview(infoCard)
+        
+        let sectionHeader40 = createHeaderLabel("40% CONFIGURATION OPTIONS")
+        contentStack.addArrangedSubview(sectionHeader40)
+        contentStack.addArrangedSubview(import40Button)
+        contentStack.addArrangedSubview(apply40Button)
+        
+        let sectionHeader100 = createHeaderLabel("100% CONFIGURATION OPTIONS")
+        contentStack.addArrangedSubview(sectionHeader100)
+        contentStack.addArrangedSubview(import100Button)
+        contentStack.addArrangedSubview(apply100Button)
+        
+        let sectionHeaderSystem = createHeaderLabel("EMERGENCY RESTORATION TOOLS")
+        contentStack.addArrangedSubview(sectionHeaderSystem)
+        contentStack.addArrangedSubview(restoreStockButton)
 
-        for slot in AssetSlot.allCases {
-            let section = SlotSectionView(slot: slot)
-            section.presenter = self
-            slotSections.append(section)
-            contentStack.addArrangedSubview(section)
-        }
+        // Target Control Interactive Binding Hooks
+        import40Button.addAction { [weak self] in self?.triggerFileImportTarget(.fortyPercent) }
+        import100Button.addAction { [weak self] in self?.triggerFileImportTarget(.oneHundredPercent) }
+        
+        apply40Button.addAction { [weak self] in self?.executeInstantInjection(.fortyPercent) }
+        apply100Button.addAction { [weak self] in self?.executeInstantInjection(.oneHundredPercent) }
+        
+        restoreStockButton.addAction { [weak self] in self?.executeStockReversion() }
 
         NSLayoutConstraint.activate([
             scrollView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
@@ -419,194 +327,200 @@ final class RootViewController: UIViewController {
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
 
-            contentStack.topAnchor.constraint(equalTo: scrollView.topAnchor, constant: 20),
-            contentStack.bottomAnchor.constraint(equalTo: scrollView.bottomAnchor, constant: -20),
-            contentStack.leadingAnchor.constraint(equalTo: scrollView.leadingAnchor, constant: 20),
-            contentStack.trailingAnchor.constraint(equalTo: scrollView.trailingAnchor, constant: -20),
-            contentStack.widthAnchor.constraint(equalTo: scrollView.widthAnchor, constant: -40)
+            contentStack.topAnchor.constraint(equalTo: scrollView.topAnchor, constant: 16),
+            contentStack.bottomAnchor.constraint(equalTo: scrollView.bottomAnchor, constant: -16),
+            contentStack.leadingAnchor.constraint(equalTo: scrollView.leadingAnchor, constant: 16),
+            contentStack.trailingAnchor.constraint(equalTo: scrollView.trailingAnchor, -16),
+            contentStack.widthAnchor.constraint(equalTo: scrollView.widthAnchor, constant: -32)
         ])
     }
 
-    private func setupInfoCard() {
+    private func setupTargetTrackingCard() {
         infoCard.backgroundColor = .secondarySystemBackground
         infoCard.layer.cornerRadius = 16
         infoCard.translatesAutoresizingMaskIntoConstraints = false
         
-        let sectionHeader = UILabel()
-        sectionHeader.text = "TARGET APP ENVIRONMENT"
-        sectionHeader.font = .systemFont(ofSize: 11, weight: .bold)
-        sectionHeader.textColor = .tertiaryLabel
+        let infoHeader = UILabel()
+        infoHeader.text = "RESOLVED RUNTIME CONFIG TARGET"
+        infoHeader.font = .systemFont(ofSize: 11, weight: .bold)
+        infoHeader.textColor = .tertiaryLabel
         
-        let appNameTitle = createStaticLabel("App Name:")
-        appNameValLabel.font = .systemFont(ofSize: 14, weight: .medium)
-        let appStack = UIStackView(arrangedSubviews: [appNameTitle, appNameValLabel])
+        let appStack = createRowInfoStack(title: "App Context:", valLabel: appNameValLabel, boldValue: true)
+        let bundleStack = createRowInfoStack(title: "Bundle Core:", valLabel: bundleIdValLabel, isMono: true)
+        let uuidStack = createRowInfoStack(title: "Container ID:", valLabel: uuidValLabel, isMono: true)
         
-        let bundleIdTitle = createStaticLabel("Bundle ID:")
-        bundleIdValLabel.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
-        let bundleStack = UIStackView(arrangedSubviews: [bundleIdTitle, bundleIdValLabel])
+        let separator = UIView()
+        separator.backgroundColor = .separator
+        separator.heightAnchor.constraint(equalToConstant: 0.5).isActive = true
         
-        let uuidTitle = createStaticLabel("Folder UUID:")
-        uuidValLabel.font = .monospacedSystemFont(ofSize: 12, weight: .bold)
-        uuidValLabel.numberOfLines = 0
-        let uuidStack = UIStackView(arrangedSubviews: [uuidTitle, uuidValLabel])
+        let targetPathTitle = UILabel()
+        targetPathTitle.text = "TARGET RESOLUTION PATH:"
+        targetPathTitle.font = .systemFont(ofSize: 10, weight: .bold)
+        targetPathTitle.textColor = .secondaryLabel
         
-        let infoStack = UIStackView(arrangedSubviews: [sectionHeader, appStack, bundleStack, uuidStack])
-        infoStack.axis = .vertical
-        infoStack.spacing = 8
-        infoStack.translatesAutoresizingMaskIntoConstraints = false
+        pathPreviewLabel.numberOfLines = 0
+        pathPreviewLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        pathPreviewLabel.textColor = .label
         
-        infoCard.addSubview(infoStack)
+        let trackingVerticalStack = UIStackView(arrangedSubviews: [infoHeader, appStack, bundleStack, uuidStack, separator, targetPathTitle, pathPreviewLabel])
+        trackingVerticalStack.axis = .vertical
+        trackingVerticalStack.spacing = 8
+        trackingVerticalStack.setCustomSpacing(12, after: separator)
+        trackingVerticalStack.translatesAutoresizingMaskIntoConstraints = false
+        
+        infoCard.addSubview(trackingVerticalStack)
         
         NSLayoutConstraint.activate([
-            infoStack.topAnchor.constraint(equalTo: infoCard.topAnchor, constant: 14),
-            infoStack.bottomAnchor.constraint(equalTo: infoCard.bottomAnchor, constant: -14),
-            infoStack.leadingAnchor.constraint(equalTo: infoCard.leadingAnchor, constant: 16),
-            infoStack.trailingAnchor.constraint(equalTo: infoCard.trailingAnchor, constant: -16)
+            trackingVerticalStack.topAnchor.constraint(equalTo: infoCard.topAnchor, constant: 14),
+            trackingVerticalStack.bottomAnchor.constraint(equalTo: infoCard.bottomAnchor, constant: -14),
+            trackingVerticalStack.leadingAnchor.constraint(equalTo: infoCard.leadingAnchor, constant: 14),
+            trackingVerticalStack.trailingAnchor.constraint(equalTo: infoCard.trailingAnchor, constant: -14)
         ])
     }
     
-    private func createStaticLabel(_ text: String) -> UILabel {
-        let lbl = UILabel()
-        lbl.text = text
-        lbl.font = .systemFont(ofSize: 13, weight: .regular)
-        lbl.textColor = .secondaryLabel
-        lbl.widthAnchor.constraint(equalToConstant: 85).isActive = true
-        return lbl
+    private func createRowInfoStack(title: String, valLabel: UILabel, boldValue: Bool = false, isMono: Bool = false) -> UIStackView {
+        let titleLabel = UILabel()
+        titleLabel.text = title
+        titleLabel.font = .systemFont(ofSize: 13, weight: .regular)
+        titleLabel.textColor = .secondaryLabel
+        titleLabel.widthAnchor.constraint(equalToConstant: 90).isActive = true
+        
+        valLabel.font = isMono ? .monospacedSystemFont(ofSize: 12, weight: boldValue ? .bold : .regular) : .systemFont(ofSize: 13, weight: boldValue ? .bold : .regular)
+        valLabel.textColor = .label
+        valLabel.numberOfLines = 0
+        
+        let horizontalRow = UIStackView(arrangedSubviews: [titleLabel, valLabel])
+        horizontalRow.axis = .horizontal
+        horizontalRow.alignment = .top
+        return horizontalRow
+    }
+    
+    private func createHeaderLabel(_ text: String) -> UILabel {
+        let label = UILabel()
+        label.text = text
+        label.font = .systemFont(ofSize: 12, weight: .bold)
+        label.textColor = .secondaryLabel
+        return label
     }
 
-    private func runDetection(displaySuccessAlert: Bool) {
+    private func runEnvironmentScan() {
         let result = AppPathResolver.resolveApp()
-        
         appNameValLabel.text = result.appName
         bundleIdValLabel.text = result.bundleID
         uuidValLabel.text = result.uuid
         uuidValLabel.textColor = result.isDetected ? .label : .systemRed
         
-        if result.isDetected {
-            slotSections.forEach { $0.refresh() }
-            if displaySuccessAlert {
-                showInfo(title: "Detection Match", message: "Successfully tracked target directory:\n\(result.uuid)")
-            }
-        } else if displaySuccessAlert {
-            showInfo(title: "Detection Failure", message: "Could not map folder containing standard runtime plists.")
+        pathPreviewLabel.text = AssetConfig.targetPath
+    }
+
+    private func evaluateFileStatusStates() {
+        // Evaluate condition metrics of the 40% variant subsystem
+        if LocalStore.hasFile(for: .fortyPercent) {
+            import40Button.updateSubtitle("Payload ready inside app container folder")
+            import40Button.updateIndicatorIcon("checkmark.circle.fill")
+            apply40Button.isEnabled = true
+            apply40Button.alpha = 1.0
+        } else {
+            import40Button.updateSubtitle("No configuration package active — tap to choose file")
+            import40Button.updateIndicatorIcon("plus.circle")
+            apply40Button.isEnabled = false
+            apply40Button.alpha = 0.5
+        }
+        
+        // Evaluate condition metrics of the 100% variant subsystem
+        if LocalStore.hasFile(for: .oneHundredPercent) {
+            import100Button.updateSubtitle("Payload ready inside app container folder")
+            import100Button.updateIndicatorIcon("checkmark.circle.fill")
+            apply100Button.isEnabled = true
+            apply100Button.alpha = 1.0
+        } else {
+            import100Button.updateSubtitle("No configuration package active — tap to choose file")
+            import100Button.updateIndicatorIcon("plus.circle")
+            apply100Button.isEnabled = false
+            apply100Button.alpha = 0.5
+        }
+        
+        // Evaluate status metrics for the fallback backup profile
+        if LocalStore.hasBackup() {
+            restoreStockButton.isEnabled = true
+            restoreStockButton.alpha = 1.0
+            restoreStockButton.updateSubtitle("Original base backup file preserved in sandboxed safety layout")
+        } else {
+            restoreStockButton.isEnabled = false
+            restoreStockButton.alpha = 0.5
+            restoreStockButton.updateSubtitle("No stock file backup captured yet (Generated on first swap action)")
         }
     }
 
-    @objc private func sharedFileReceived(_ note: Notification) {
-        guard let url = note.userInfo?[Notification.SharedFileKeys.url] as? URL else { return }
-        stageSharedFile(url, for: .primary)
-    }
+    // MARK: - Operational Target Executions
 
-    private func stageSharedFile(_ url: URL, for slot: AssetSlot) {
-        do {
-            try FileOps.replace(destination: LocalStore.newFile(for: slot), withContentsOf: url)
-            slotSections.first(where: { $0.slot == slot })?.refresh()
-            showInfo(title: "Saved", message: "File staged successfully. Use \"Apply Imported File\" to swap it in.")
-        } catch {
-            showInfo(title: "Error", message: error.localizedDescription)
-        }
-    }
-}
-
-// MARK: - Shared present/confirm helpers
-
-extension UIViewController {
-    func confirmAndRun(title: String, message: String, action: @escaping () throws -> Void) {
-        let confirm = UIAlertController(title: title, message: message, preferredStyle: .alert)
-        confirm.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        confirm.addAction(UIAlertAction(title: "Replace", style: .destructive) { [weak self] _ in
-            do {
-                try action()
-                self?.showInfo(title: "Done", message: "File replaced successfully.")
-            } catch {
-                self?.showInfo(title: "Error", message: error.localizedDescription)
-            }
-        })
-        present(confirm, animated: true)
-    }
-
-    func showInfo(title: String, message: String) {
-        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-        present(alert, animated: true)
-    }
-}
-
-// MARK: - Backup View Controller
-
-final class BackupViewController: UIViewController, UIDocumentPickerDelegate {
-    private let slot: AssetSlot
-    private let saveCurrentButton = CardButton(icon: "square.and.arrow.down.fill", tint: .systemGreen, title: "Save Current File as Backup", subtitle: "Keeps a safe copy of what's active now")
-    private let importFileButton = CardButton(icon: "square.and.arrow.up.fill", tint: .systemOrange, title: "Import a New File", subtitle: "Pick a file from your device to use later")
-
-    init(slot: AssetSlot) {
-        self.slot = slot
-        super.init(nibName: nil, bundle: nil)
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        title = "Manage Files"
-        view.backgroundColor = .systemGroupedBackground
-
-        let headerLabel = UILabel()
-        headerLabel.text = slot.displayName
-        headerLabel.font = .systemFont(ofSize: 24, weight: .bold)
-
-        let subLabel = UILabel()
-        subLabel.text = "Save a copy of this file, or bring in a new one to apply later."
-        subLabel.font = .systemFont(ofSize: 14)
-        subLabel.textColor = .secondaryLabel
-        subLabel.numberOfLines = 0
-
-        saveCurrentButton.addAction { [weak self] in self?.tapSaveCurrentAsBackup() }
-        importFileButton.addAction { [weak self] in self?.tapImportNew() }
-
-        let stack = UIStackView(arrangedSubviews: [headerLabel, subLabel, saveCurrentButton, importFileButton])
-        stack.axis = .vertical
-        stack.spacing = 16
-        stack.setCustomSpacing(4, after: headerLabel)
-        stack.setCustomSpacing(24, after: subLabel)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(stack)
-
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 20),
-            stack.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -20),
-            stack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 24)
-        ])
-    }
-
-    private func tapSaveCurrentAsBackup() {
-        let source = URL(fileURLWithPath: Settings.targetPath(for: slot))
-        do {
-            try FileOps.replace(destination: LocalStore.backupFile(for: slot), withContentsOf: source)
-            showInfo(title: "Backed Up", message: "Current configuration backed up.")
-        } catch {
-            showInfo(title: "Error", message: error.localizedDescription)
-        }
-    }
-
-    private func tapImportNew() {
+    private func triggerFileImportTarget(_ mode: ConfigMode) {
+        activePickingMode = mode
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.data], asCopy: true)
         picker.delegate = self
         present(picker, animated: true)
     }
 
-    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-        guard let picked = urls.first else { return }
+    private func executeInstantInjection(_ mode: ConfigMode) {
+        let payloadURL = mode == .fortyPercent ? LocalStore.file40URL : LocalStore.file100URL
+        let targetPath = AssetConfig.targetPath
+        
         do {
-            try FileOps.replace(destination: LocalStore.newFile(for: slot), withContentsOf: picked)
-            showInfo(title: "Saved", message: "File imported.")
+            try FileOps.applyConfig(from: payloadURL, to: targetPath)
+            evaluateFileStatusStates()
+            
+            // Subtle, transient notification layout for rapid action visual profiling
+            let alert = UIAlertController(title: "Applied Instantly", message: "Swapped profile execution vector completed.", preferredStyle: .textFields)
+            present(alert, animated: true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { alert.dismiss(animated: true) }
         } catch {
-            showInfo(title: "Error", message: error.localizedDescription)
+            showRuntimeErrorAlert(error)
         }
+    }
+    
+    private func executeStockReversion() {
+        let targetPath = AssetConfig.targetPath
+        do {
+            try FileOps.restoreStockBackup(to: targetPath)
+            let alert = UIAlertController(title: "Restored", message: "Stock configuration re-mounted.", preferredStyle: .textFields)
+            present(alert, animated: true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { alert.dismiss(animated: true) }
+        } catch {
+            showRuntimeErrorAlert(error)
+        }
+    }
+    
+    private func showRuntimeErrorAlert(_ error: Error) {
+        let alert = UIAlertController(title: "File Operations Error", message: error.localizedDescription, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Dismiss", style: .default))
+        present(alert, animated: true)
+    }
+
+    // MARK: - Document Picker Delegate Hooks
+
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        guard let pickedURL = urls.first, let mode = activePickingMode else { return }
+        let saveDestination = mode == .fortyPercent ? LocalStore.file40URL : LocalStore.file100URL
+        
+        let fm = FileManager.default
+        do {
+            if fm.fileExists(atPath: saveDestination.path) {
+                try fm.removeItem(at: saveDestination)
+            }
+            try fm.copyItem(at: pickedURL, to: saveDestination)
+            evaluateFileStatusStates()
+        } catch {
+            showRuntimeErrorAlert(error)
+        }
+        activePickingMode = nil
+    }
+    
+    func documentPickerDidCancel(_ controller: UIDocumentPickerViewController) {
+        activePickingMode = nil
     }
 }
 
-// MARK: - App Delegate
+// MARK: - Core System Interface Bridge Layout
 
 @main
 final class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -614,35 +528,10 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         window = UIWindow(frame: UIScreen.main.bounds)
-        let nav = UINavigationController(rootViewController: RootViewController())
-        nav.navigationBar.prefersLargeTitles = true
-        window?.rootViewController = nav
+        let rootNav = UINavigationController(rootViewController: RootViewController())
+        rootNav.navigationBar.prefersLargeTitles = true
+        window?.rootViewController = rootNav
         window?.makeKeyAndVisible()
         return true
-    }
-
-    func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
-        let accessed = url.startAccessingSecurityScopedResource()
-        let stagedURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension(url.pathExtension)
-        do {
-            try FileOps.replace(destination: stagedURL, withContentsOf: url)
-            if accessed { url.stopAccessingSecurityScopedResource() }
-            NotificationCenter.default.post(name: .receivedSharedFile, object: nil, userInfo: [Notification.SharedFileKeys.url: stagedURL])
-        } catch {
-            if accessed { url.stopAccessingSecurityScopedResource() }
-        }
-        return true
-    }
-}
-
-// MARK: - Notification Configurations
-
-extension Notification.Name {
-    static let receivedSharedFile = Notification.Name("receivedSharedFile")
-}
-
-extension Notification {
-    enum SharedFileKeys {
-        static let url = "url"
     }
 }
